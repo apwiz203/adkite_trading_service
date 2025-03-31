@@ -4,7 +4,7 @@ import requests
 
 from config import IV_MIN, IV_MAX, MIN_CREDIT, CAPITAL, INITIAL_ALLOCATION, STRIKE_DISTANCE, PROTECTION_DISTANCE, \
     ALPHA_VANTAGE_API_KEY
-from api_helper import get_options_chain, get_current_nifty_price, get_margin_required
+from api_helper import get_current_nifty_price, get_margin_required
 
 
 def check_entry_conditions(options_chain, current_price, expiry_date):
@@ -43,20 +43,24 @@ def select_strikes(current_price):
     }
 
 
-def calculate_average_iv(options_chain, strikes):
-    """Calculate the average IV of the selected strikes."""
-    iv_values = []
-    for strike in strikes.values():
-        option = next((opt for opt in options_chain if opt["strike"] == strike), None)
-        if option and "impliedVolatility" in option:
-            iv_values.append(option["impliedVolatility"])
-    return sum(iv_values) / len(iv_values) if iv_values else 0
+def calculate_average_iv(options_chain, current_price, strike_range=200):
+    """Calculate average IV for options within a strike range of the current price."""
+    relevant_options = [
+        opt for opt in options_chain
+        if abs(opt["strike"] - current_price) <= strike_range
+    ]
+    if not relevant_options:
+        return 0
+    total_iv = sum(opt["iv"] for opt in relevant_options)
+    return total_iv / len(relevant_options)
 
 
 def get_premium(options_chain, strike, option_type):
-    """Fetch the premium for a specific strike and option type."""
-    option = next((opt for opt in options_chain if opt["strike"] == strike and opt["option_type"] == option_type), None)
-    return option["last_price"] if option else 0
+    """Get the premium for a specific strike and option type."""
+    for opt in options_chain:
+        if opt["strike"] == strike and opt["option_type"] == option_type:
+            return opt["premium"]
+    return None  # Return None if no matching option is found
 
 
 def calculate_fees(gross_credit):
@@ -64,17 +68,26 @@ def calculate_fees(gross_credit):
     return 10  # Replace with actual fee logic
 
 
-def calculate_net_credit(options_chain, strikes):
+def calculate_net_credit(options_chain):
     """Calculate the net credit for the Iron Condor."""
+    current_price = get_current_nifty_price()  # Assume this function exists
+    strikes = select_strikes(current_price)
+
     sold_call_premium = get_premium(options_chain, strikes["sold_call"], "CE")
     bought_call_premium = get_premium(options_chain, strikes["bought_call"], "CE")
     sold_put_premium = get_premium(options_chain, strikes["sold_put"], "PE")
     bought_put_premium = get_premium(options_chain, strikes["bought_put"], "PE")
 
-    gross_credit = (sold_call_premium + sold_put_premium) - (bought_call_premium + bought_put_premium)
-    fees = calculate_fees(gross_credit)
-    net_credit = gross_credit - fees
-    return net_credit * LOT_SIZE
+    # Check for missing premiums
+    if None in [sold_call_premium, bought_call_premium, sold_put_premium, bought_put_premium]:
+        return 0  # Return 0 if any premium is unavailable
+
+    call_spread_credit = sold_call_premium - bought_call_premium
+    put_spread_credit = sold_put_premium - bought_put_premium
+    total_credit = call_spread_credit + put_spread_credit
+
+    # Adjust for lot size (assume lot_size is a defined constant, e.g., 50 for Nifty)
+    return total_credit * 75
 
 
 def check_economic_calendar(expiry_date):
